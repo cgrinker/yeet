@@ -1,0 +1,7 @@
+{
+    "dependencies": [
+        "llvm",
+        "fmt",
+        "cxxopts"
+    ]
+}

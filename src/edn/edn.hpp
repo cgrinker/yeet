@@ -1,4 +1,3 @@
-//https://github.com/shaunxcode/edn-cpp
 #include <list>
 #include <string>
 #include <cstring>

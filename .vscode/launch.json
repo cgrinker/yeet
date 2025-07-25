@@ -11,7 +11,7 @@
             "program": "${workspaceRoot}/build/Debug/main.exe",
             "args": [
                 "--filename",
-                "yeet/test0.yeet"
+                "sexpr/test0.yeet"
             ],
             "cwd": "${workspaceRoot}",
             "stopAtEntry": false,

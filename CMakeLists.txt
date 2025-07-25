@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 
+project(HelloWorld)
+
+
+## Set C++ confog
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Force MSVC compiler on Windows
@@ -9,8 +13,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
     
 # endif()
 
-project(HelloWorld)
 
+
+## Add vcpkg dependencies
 find_package(fmt CONFIG REQUIRED)
 find_package(LLVM CONFIG REQUIRED)
 find_package(cxxopts CONFIG REQUIRED)
@@ -24,8 +29,19 @@ include_directories(${LLVM_INCLUDE_DIRS})
 llvm_map_components_to_libnames(llvm_libs Support Core IRReader OrcJit X86)
 
 
-add_executable(main src/main.cpp)
+#Source
+file(GLOB_RECURSE SRC_FILES
+    src/*.cpp
+    src/*.hpp
+    src/*.h
+)
 
+
+## Main Executable
+add_executable(main ${SRC_FILES})
+
+
+## Link
 target_link_libraries(main PRIVATE fmt::fmt-header-only)
 target_link_libraries(main PRIVATE ${llvm_libs})
 target_link_libraries(main PRIVATE cxxopts::cxxopts)

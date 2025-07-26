@@ -22,11 +22,25 @@ find_package(cxxopts CONFIG REQUIRED)
 
 
 ## LLVM
+
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(HandleLLVMOptions)
 add_definitions(${LLVM_DEFINITIONS})
 include_directories(${LLVM_INCLUDE_DIRS})
-llvm_map_components_to_libnames(llvm_libs Support Core IRReader OrcJit X86)
+
+# Platform-specific LLVM codegen library
+set(LLVM_COMPONENTS Support Core IRReader OrcJit)
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+    list(APPEND LLVM_COMPONENTS AArch64)
+elseif(APPLE)
+    list(APPEND LLVM_COMPONENTS X86)
+elseif(WIN32)
+    list(APPEND LLVM_COMPONENTS X86)
+elseif(UNIX)
+    list(APPEND LLVM_COMPONENTS X86)
+endif()
+
+llvm_map_components_to_libnames(llvm_libs ${LLVM_COMPONENTS})
 
 
 #Source

@@ -18,7 +18,19 @@
             
             "environment": [],
             "console": "externalTerminal"
-        }
+        },
+        {
+            "name": "(lldb) Launch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}/build/main",
+            "args": ["--filename", "sexpr/test1.yeet"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceRoot}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb"
+        },
         
     ]
 }

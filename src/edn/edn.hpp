@@ -388,8 +388,10 @@ namespace edn {
         case '"':
         case '\\':
           after += '\\';
+          break;
         default:
           after += before[i];
+          break;
       }
     }
     return after;

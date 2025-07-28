@@ -1,7 +1,14 @@
 # Finna Yeet on Em
 
+## Install
+```sh
+cmake --preset=default
+cmake --build build
+```
+
 ## TODO Laundry List
 * EDN comments aren't working
+* Floating point math is erroring
 
 ### CMakeUserPresets.json
 ```json

@@ -18,6 +18,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 ## Add vcpkg dependencies
 find_package(LLVM CONFIG REQUIRED)
 find_package(cxxopts CONFIG REQUIRED)
+find_package(pegtl CONFIG REQUIRED)
 
 
 ## LLVM
@@ -53,7 +54,10 @@ file(GLOB_RECURSE SRC_FILES
 ## Main Executable
 add_executable(main ${SRC_FILES})
 
+## Include directories
+target_include_directories(main PRIVATE "src")
 
 ## Link
 target_link_libraries(main PRIVATE ${llvm_libs})
 target_link_libraries(main PRIVATE cxxopts::cxxopts)
+target_link_libraries(main PRIVATE taocpp::pegtl)

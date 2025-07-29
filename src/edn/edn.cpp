@@ -11,7 +11,7 @@ namespace edn {
   using std::string;
   using std::list;
 
-  string validSymbolChars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.*+!-_?$%&=:#/";
+  string validSymbolChars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.*+!-_?$%&=:#/><;";
   
 
   void createToken(TokenType type, int line, string value, list<EdnToken> &tokens) {

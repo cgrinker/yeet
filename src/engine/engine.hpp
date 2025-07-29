@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 #include <memory>
+#include <unordered_map>
+#include <vector>
 
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/IRBuilder.h>
@@ -18,6 +20,9 @@ namespace yeet
         std::unordered_map<std::string, llvm::Value*> symbolTable;
         std::unique_ptr<llvm::orc::LLJIT> jit;
         std::unique_ptr<llvm::LLVMContext> context;
+        
+        // Function table: name -> (args, body)
+        std::unordered_map<std::string, std::pair<std::vector<std::string>, edn::EdnNode>> functionTable;
     public:
         Engine();
         ~Engine();
@@ -31,6 +36,12 @@ namespace yeet
         llvm::Value* codegenSymbol(const edn::EdnNode& node, llvm::IRBuilder<>& builder);
         llvm::Value* codegenList(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenExpr(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenCond(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenAssign(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenBinop(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenWhile(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenDefn(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenCall(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         
         // Add any other necessary member variables or methods here
     };

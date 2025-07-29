@@ -11,13 +11,13 @@
             "program": "${workspaceRoot}/build/Debug/main.exe",
             "args": [
                 "--filename",
-                "sexpr/test0.yeet"
+                "sexpr/test5_functions.yeet"
             ],
             "cwd": "${workspaceRoot}",
             "stopAtEntry": false,
             
             "environment": [],
-            "console": "externalTerminal"
+            "console": "integratedTerminal"
         },
         {
             "name": "(lldb) Launch",

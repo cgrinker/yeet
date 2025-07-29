@@ -1,0 +1,16 @@
+(
+(defn add2 (a b)
+    (+ a b)
+)
+
+
+(defn square (x)
+    (* x x)
+)
+
+
+(= x (+ (add2 3 4) (square 5)))
+
+
+(add2 (square 2) (add2 1 2))
+)

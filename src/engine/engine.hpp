@@ -17,12 +17,15 @@ namespace yeet
     class Engine
     {
     private:
-        std::unordered_map<std::string, llvm::Value*> symbolTable;
+        // Symbol table: name -> (alloca, type string)
+        std::unordered_map<std::string, std::pair<llvm::Value*, std::string>> symbolTable;
         std::unique_ptr<llvm::orc::LLJIT> jit;
         std::unique_ptr<llvm::LLVMContext> context;
         
-        // Function table: name -> (args, body)
-        std::unordered_map<std::string, std::pair<std::vector<std::string>, edn::EdnNode>> functionTable;
+        // Function table: name -> (args/types, body)
+        std::unordered_map<std::string, std::pair<std::vector<std::pair<std::string, std::string>>, edn::EdnNode>> functionTable;
+        // Function return types: name -> type string
+        std::unordered_map<std::string, std::string> functionReturnTypes;
     public:
         Engine();
         ~Engine();

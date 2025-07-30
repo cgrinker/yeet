@@ -1,10 +1,10 @@
 (
-   (= x 0)
-   (= sum 0)
+   (= x :int32 0)
+   (= sum :int32 0)
    (while (< x 10)
     (
-        (= sum (+ sum 10))
-        (= x (+ x 1))
+        (= sum :int32 (+ sum 10))
+        (= x :int32 (+ x 1))
     )
    )
    (+ sum 0) 

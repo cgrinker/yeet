@@ -113,29 +113,43 @@ llvm::Value* Engine::codegenFloat(const edn::EdnNode& node, llvm::IRBuilder<>& b
 // Helper for EdnSymbol
 llvm::Value* Engine::codegenSymbol(const edn::EdnNode& node, llvm::IRBuilder<>& builder) {
     if (node.value == "else") {
-        // 'else' is a special keyword in cond, not a variable
         return llvm::ConstantInt::get(builder.getInt32Ty(), 1);
     }
     auto it = symbolTable.find(node.value);
     if (it == symbolTable.end()) throw std::string("Unknown variable: ") + node.value;
-    return builder.CreateLoad(builder.getInt32Ty(), it->second, node.value);
+    llvm::Value* alloca = it->second.first;
+    std::string typeStr = it->second.second;
+    llvm::Type* varType = (typeStr == "float64") ? builder.getDoubleTy() : builder.getInt32Ty();
+    return builder.CreateLoad(varType, alloca, node.value);
 }
 
 llvm::Value* Engine::codegenAssign(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder) {
     using namespace edn;
-    // Assignment: (= var value)
-    if (node.values.size() != 3) throw "Expected variable and value";
-    const EdnNode& varNode = *(++node.values.begin());
-    const EdnNode& valNode = *(++++node.values.begin());
-    if (varNode.type != EdnSymbol) throw "Expected variable name";
-    llvm::Value* value = this->codegenExpr(valNode, context, builder);
-    auto it = symbolTable.find(varNode.value);
-    llvm::Value* alloca = nullptr;
-    if (it == symbolTable.end()) {
-        alloca = builder.CreateAlloca(builder.getInt32Ty(), nullptr, varNode.value);
-        symbolTable[varNode.value] = alloca;
+    // Assignment: (= var [:type] value)
+    if (node.values.size() < 3) throw "Expected variable and value";
+    auto it = node.values.begin();
+    ++it; // varNode
+    const EdnNode& varNode = *it;
+    std::string typeStr = "int32";
+    const EdnNode* valNode = nullptr;
+    if (node.values.size() == 4 && (++it)->type == EdnKeyword) {
+        typeStr = it->value.substr(1); // remove leading ':'
+        ++it;
+        valNode = &(*it);
     } else {
-        alloca = it->second;
+        ++it;
+        valNode = &(*it);
+        if (valNode->type == EdnFloat) typeStr = "float64";
+    }
+    llvm::Value* value = this->codegenExpr(*valNode, context, builder);
+    auto symIt = symbolTable.find(varNode.value);
+    llvm::Value* alloca = nullptr;
+    llvm::Type* varType = (typeStr == "float64") ? builder.getDoubleTy() : builder.getInt32Ty();
+    if (symIt == symbolTable.end()) {
+        alloca = builder.CreateAlloca(varType, nullptr, varNode.value);
+        symbolTable[varNode.value] = std::make_pair(alloca, typeStr);
+    } else {
+        alloca = symIt->second.first;
     }
     builder.CreateStore(value, alloca);
     return value;
@@ -188,20 +202,29 @@ llvm::Value* Engine::codegenList(const edn::EdnNode& node, llvm::LLVMContext& co
 // (defn name (args...) body...)
 llvm::Value* Engine::codegenDefn(const edn::EdnNode& node, llvm::LLVMContext&, llvm::IRBuilder<>&) {
     using namespace edn;
-    if (node.values.size() < 4) throw "defn requires a name, arg list, and body";
-    const EdnNode& nameNode = *(++node.values.begin());
-    const EdnNode& argsNode = *(++++node.values.begin());
+    if (node.values.size() < 5) throw "defn requires a return type, name, arg list, and body";
+    const EdnNode& retTypeNode = *(++node.values.begin());
+    const EdnNode& nameNode = *(++++node.values.begin());
+    const EdnNode& argsNode = *(++++++node.values.begin());
+    if (retTypeNode.type != EdnKeyword) throw "defn: first argument must be return type keyword";
     if (nameNode.type != EdnSymbol) throw "defn: function name must be a symbol";
     if (argsNode.type != EdnList) throw "defn: argument list must be a list";
-    std::vector<std::string> args;
+    std::string retType = retTypeNode.value.substr(1); // remove leading ':'
+    std::vector<std::pair<std::string, std::string>> args;
     for (const auto& arg : argsNode.values) {
-        if (arg.type != EdnSymbol) throw "defn: all arguments must be symbols";
-        args.push_back(arg.value);
+        if (arg.type == EdnList && arg.values.size() == 2 && arg.values.front().type == EdnSymbol && arg.values.back().type == EdnKeyword) {
+            args.push_back({arg.values.front().value, arg.values.back().value.substr(1)});
+        } else if (arg.type == EdnSymbol) {
+            args.push_back({arg.value, "int32"});
+        } else {
+            throw "defn: all arguments must be symbols or (name :type)";
+        }
     }
-    // Store the function definition (args, body...)
     EdnNode bodyNode = node;
-    bodyNode.values.erase(bodyNode.values.begin(), std::next(bodyNode.values.begin(), 3));
+    bodyNode.values.erase(bodyNode.values.begin(), std::next(bodyNode.values.begin(), 4));
     functionTable[nameNode.value] = {args, bodyNode};
+    // Store return type in a new map or extend functionTable if needed
+    functionReturnTypes[nameNode.value] = retType;
     return nullptr; // defn does not produce a value
 }
 
@@ -213,39 +236,55 @@ llvm::Value* Engine::codegenCall(const edn::EdnNode& node, llvm::LLVMContext& co
     if (it == functionTable.end()) throw std::string("Unknown function: ") + opNode.value;
     const auto& [args, bodyNode] = it->second;
     if (node.values.size() - 1 != args.size()) throw "Function argument count mismatch";
-    // Create function type: double(args...)
-    std::vector<llvm::Type*> argTypes(args.size(), builder.getDoubleTy());
-    auto funcType = llvm::FunctionType::get(builder.getDoubleTy(), argTypes, false);
+    // Get return type
+    std::string retType = "double";
+    auto retIt = functionReturnTypes.find(opNode.value);
+    if (retIt != functionReturnTypes.end()) retType = retIt->second;
+    llvm::Type* llvmRetType = builder.getDoubleTy();
+    if (retType == "int32") llvmRetType = builder.getInt32Ty();
+    else if (retType == "float64") llvmRetType = builder.getDoubleTy();
+    else if (retType == "void") llvmRetType = builder.getVoidTy();
+    // Create function type
+    std::vector<llvm::Type*> argTypes;
+    for (const auto& arg : args) {
+        if (arg.second == "float64") argTypes.push_back(builder.getDoubleTy());
+        else argTypes.push_back(builder.getInt32Ty());
+    }
+    auto funcType = llvm::FunctionType::get(llvmRetType, argTypes, false);
     auto& module = *builder.GetInsertBlock()->getModule();
     llvm::Function* func = module.getFunction(opNode.value);
     if (!func) {
         func = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, opNode.value, &module);
-        // Create entry block for function
         llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", func);
         llvm::IRBuilder<> funcBuilder(entry);
-        // Set up argument symbol table
         auto argIt = func->arg_begin();
         for (size_t i = 0; i < args.size(); ++i, ++argIt) {
-            llvm::Value* alloca = funcBuilder.CreateAlloca(builder.getDoubleTy(), nullptr, args[i]);
+            llvm::Type* argType = argTypes[i];
+            llvm::Value* alloca = funcBuilder.CreateAlloca(argType, nullptr, args[i].first);
             funcBuilder.CreateStore(&*argIt, alloca);
-            symbolTable[args[i]] = alloca;
+            symbolTable[args[i].first] = std::make_pair(alloca, args[i].second);
         }
-        // Evaluate body (could be multiple expressions)
         llvm::Value* result = nullptr;
         for (const auto& expr : bodyNode.values) {
             result = this->codegenExpr(expr, context, funcBuilder);
         }
-        if (result->getType()->isIntegerTy()) {
-            result = funcBuilder.CreateSIToFP(result, builder.getDoubleTy(), "intToDouble");
+        if (retType != "void") {
+            if (result && result->getType()->isIntegerTy() && llvmRetType->isDoubleTy()) {
+                result = funcBuilder.CreateSIToFP(result, builder.getDoubleTy(), "intToDouble");
+            }
+            funcBuilder.CreateRet(result);
+        } else {
+            funcBuilder.CreateRetVoid();
         }
-        funcBuilder.CreateRet(result);
     }
-    // Prepare call arguments
     std::vector<llvm::Value*> callArgs;
-    for (auto it = std::next(node.values.begin()); it != node.values.end(); ++it) {
-        llvm::Value* argVal = this->codegenExpr(*it, context, builder);
-        if (argVal->getType()->isIntegerTy()) {
-            argVal = builder.CreateSIToFP(argVal, builder.getDoubleTy(), "intToDouble");
+    auto argNodeIt = std::next(node.values.begin());
+    for (size_t i = 0; i < args.size(); ++i, ++argNodeIt) {
+        llvm::Value* argVal = this->codegenExpr(*argNodeIt, context, builder);
+        if (args[i].second == "float64" && argVal->getType()->isIntegerTy()) {
+            argVal = builder.CreateSIToFP(argVal, builder.getDoubleTy(), "intToDoubleArg");
+        } else if (args[i].second == "int32" && argVal->getType()->isDoubleTy()) {
+            argVal = builder.CreateFPToSI(argVal, builder.getInt32Ty(), "doubleToIntArg");
         }
         callArgs.push_back(argVal);
     }
@@ -366,26 +405,38 @@ llvm::Value* Engine::codegenBinop(const edn::EdnNode& node, llvm::LLVMContext& c
     using namespace edn;
     const EdnNode& opNode = node.values.front();
     std::string op = opNode.value;
-    
     if (node.values.size() != 3) throw "Expected two operands";
     auto lhsIt = ++node.values.begin();
     auto rhsIt = ++++node.values.begin();
     llvm::Value* lhs = this->codegenExpr(*lhsIt, context, builder);
     llvm::Value* rhs = this->codegenExpr(*rhsIt, context, builder);
-
-    bool lhsIsFloat = lhsIt->type == EdnFloat;
-    bool rhsIsFloat = rhsIt->type == EdnFloat;
+    // Use type info from symbolTable if available
+    std::string lhsType = "int32";
+    std::string rhsType = "int32";
+    if (lhsIt->type == EdnSymbol) {
+        auto it = symbolTable.find(lhsIt->value);
+        if (it != symbolTable.end()) lhsType = it->second.second;
+    } else if (lhsIt->type == EdnFloat) {
+        lhsType = "float64";
+    }
+    if (rhsIt->type == EdnSymbol) {
+        auto it = symbolTable.find(rhsIt->value);
+        if (it != symbolTable.end()) rhsType = it->second.second;
+    } else if (rhsIt->type == EdnFloat) {
+        rhsType = "float64";
+    }
+    bool lhsIsDouble = (lhsType == "float64");
+    bool rhsIsDouble = (rhsType == "float64");
     if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") {
-        if (lhsIsFloat || rhsIsFloat) {
-            // Promote ints to double if needed
-            if (!lhs->getType()->isDoubleTy()) lhs = builder.CreateSIToFP(lhs, builder.getDoubleTy(), "intToDoubleL");
-            if (!rhs->getType()->isDoubleTy()) rhs = builder.CreateSIToFP(rhs, builder.getDoubleTy(), "intToDoubleR");
-            if (op == "==") return builder.CreateUIToFP(builder.CreateFCmpUEQ(lhs, rhs, "cmptmp"), builder.getInt32Ty());
-            if (op == "!=") return builder.CreateUIToFP(builder.CreateFCmpUNE(lhs, rhs, "cmptmp"), builder.getInt32Ty());
-            if (op == "<")  return builder.CreateUIToFP(builder.CreateFCmpULT(lhs, rhs, "cmptmp"), builder.getInt32Ty());
-            if (op == "<=") return builder.CreateUIToFP(builder.CreateFCmpULE(lhs, rhs, "cmptmp"), builder.getInt32Ty());
-            if (op == ">")  return builder.CreateUIToFP(builder.CreateFCmpUGT(lhs, rhs, "cmptmp"), builder.getInt32Ty());
-            if (op == ">=") return builder.CreateUIToFP(builder.CreateFCmpUGE(lhs, rhs, "cmptmp"), builder.getInt32Ty());
+        if (lhsIsDouble || rhsIsDouble) {
+            if (!lhsIsDouble) lhs = builder.CreateSIToFP(lhs, builder.getDoubleTy(), "intToDoubleL");
+            if (!rhsIsDouble) rhs = builder.CreateSIToFP(rhs, builder.getDoubleTy(), "intToDoubleR");
+            if (op == "==") return builder.CreateUIToFP(builder.CreateFCmpUEQ(lhs, rhs, "cmptmp"), builder.getDoubleTy());
+            if (op == "!=") return builder.CreateUIToFP(builder.CreateFCmpUNE(lhs, rhs, "cmptmp"), builder.getDoubleTy());
+            if (op == "<")  return builder.CreateUIToFP(builder.CreateFCmpULT(lhs, rhs, "cmptmp"), builder.getDoubleTy());
+            if (op == "<=") return builder.CreateUIToFP(builder.CreateFCmpULE(lhs, rhs, "cmptmp"), builder.getDoubleTy());
+            if (op == ">")  return builder.CreateUIToFP(builder.CreateFCmpUGT(lhs, rhs, "cmptmp"), builder.getDoubleTy());
+            if (op == ">=") return builder.CreateUIToFP(builder.CreateFCmpUGE(lhs, rhs, "cmptmp"), builder.getDoubleTy());
         } else {
             if (op == "==") return builder.CreateICmpEQ(lhs, rhs, "cmptmp");
             if (op == "!=") return builder.CreateICmpNE(lhs, rhs, "cmptmp");
@@ -395,7 +446,9 @@ llvm::Value* Engine::codegenBinop(const edn::EdnNode& node, llvm::LLVMContext& c
             if (op == ">=") return builder.CreateICmpSGE(lhs, rhs, "cmptmp");
         }
     }
-    if (lhsIsFloat || rhsIsFloat) {
+    if (lhsIsDouble || rhsIsDouble) {
+        if (!lhsIsDouble) lhs = builder.CreateSIToFP(lhs, builder.getDoubleTy(), "intToDoubleL");
+        if (!rhsIsDouble) rhs = builder.CreateSIToFP(rhs, builder.getDoubleTy(), "intToDoubleR");
         if (op == "+") return builder.CreateFAdd(lhs, rhs, "faddtmp");
         if (op == "-") return builder.CreateFSub(lhs, rhs, "fsubtmp");
         if (op == "*") return builder.CreateFMul(lhs, rhs, "fmultmp");

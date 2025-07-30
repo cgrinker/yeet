@@ -1,16 +1,6 @@
 (
-(defn add2 (a b)
-    (+ a b)
-)
-
-
-(defn square (x)
-    (* x x)
-)
-
-
-(= x (+ (add2 3 4) (square 5)))
-
-
-(add2 (square 2) (add2 1 2))
+    (defn :int32 add2 ((a :int32) (b :int32))
+        (+ a b)
+    )
+    (add2 1 2)
 )

@@ -11,7 +11,7 @@
             "program": "${workspaceRoot}/build/Debug/main.exe",
             "args": [
                 "--filename",
-                "sexpr/test5_functions.yeet"
+                "sexpr/test1_int_assignment.yeet"
             ],
             "cwd": "${workspaceRoot}",
             "stopAtEntry": false,

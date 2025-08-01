@@ -1,6 +1,7 @@
 #pragma once
 
 #include <list>
+#include <map>
 #include <string>
 #include <cstring>
 #include <iostream>
@@ -44,6 +45,7 @@ namespace edn {
     int line;
     std::string value;
     std::list<EdnNode> values;
+    std::map<std::string, std::string> metadata;
   };
 
   EdnNode read(std::string edn);

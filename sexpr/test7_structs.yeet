@@ -1,0 +1,11 @@
+(
+    (struct Point ((x :int32) (y :int32)))
+    (= p (Point (10 20)))
+    (= x :int32 30)
+    (= (. p :x) x)
+
+    (= y1 :int32 (. p :x))
+   
+
+    (+ y1 23)
+)

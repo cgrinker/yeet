@@ -103,6 +103,7 @@
         "cwctype": "cpp",
         "execution": "cpp",
         "string_view": "cpp",
-        "__memory": "cpp"
+        "__memory": "cpp",
+        "typeindex": "cpp"
     }
 }

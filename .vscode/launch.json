@@ -11,7 +11,7 @@
             "program": "${workspaceRoot}/build/Debug/main.exe",
             "args": [
                 "--filename",
-                "sexpr/test1_int_assignment.yeet"
+                "sexpr/test7_structs.yeet"
             ],
             "cwd": "${workspaceRoot}",
             "stopAtEntry": false,

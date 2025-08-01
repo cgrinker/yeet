@@ -4,6 +4,18 @@ using namespace yeet;
 
 #include "../edn/edn.hpp"
 
+// Helper: Map type string to LLVM type
+llvm::Type* getLLVMType(const std::string& typeStr, llvm::IRBuilder<>& builder) {
+    if (typeStr == "int8") return builder.getInt8Ty();
+    if (typeStr == "int16") return builder.getInt16Ty();
+    if (typeStr == "int32") return builder.getInt32Ty();
+    if (typeStr == "int64") return builder.getInt64Ty();
+    if (typeStr == "float32") return llvm::Type::getFloatTy(builder.getContext());
+    if (typeStr == "float64") return builder.getDoubleTy();
+    if (typeStr == "void") return builder.getVoidTy();
+    throw std::string("Unknown type string for LLVM type: ") + typeStr;
+}
+
 
 
 Engine::Engine() {
@@ -27,7 +39,7 @@ void Engine::initializeLLVM()
 
 void Engine::run(std::string& s)
 {
-    symbolTable.clear();
+    llvmSymbolTable.clear();
     auto node = edn::read(s);
     auto module = std::make_unique<llvm::Module>("calc_module", *context);
     llvm::IRBuilder<> builder(*context);
@@ -102,11 +114,25 @@ void Engine::run(std::string& s)
 
 // Helper for EdnInt
 llvm::Value* Engine::codegenInt(const edn::EdnNode& node, llvm::IRBuilder<>& builder) {
+    if(node.metadata.count("type")) {
+        std::string typeStr = node.metadata.at("type");
+        llvm::Type* llvmType = getLLVMType(typeStr, builder);
+        return llvm::ConstantInt::get(llvmType, std::stoi(node.value));
+    }
     return llvm::ConstantInt::get(builder.getInt32Ty(), std::stoi(node.value));
 }
 
 // Helper for EdnFloat
 llvm::Value* Engine::codegenFloat(const edn::EdnNode& node, llvm::IRBuilder<>& builder) {
+    if(node.metadata.count("type")) {
+        std::string typeStr = node.metadata.at("type");
+        if (typeStr == "float32") {
+            return llvm::ConstantFP::get(builder.getFloatTy(), std::stof(node.value));
+        } else if (typeStr == "float64") {
+            return llvm::ConstantFP::get(builder.getDoubleTy(), std::stod(node.value));
+        }
+        throw std::string("Unknown float type: ") + typeStr;
+    }
     return llvm::ConstantFP::get(builder.getDoubleTy(), std::stod(node.value));
 }
 
@@ -115,43 +141,211 @@ llvm::Value* Engine::codegenSymbol(const edn::EdnNode& node, llvm::IRBuilder<>& 
     if (node.value == "else") {
         return llvm::ConstantInt::get(builder.getInt32Ty(), 1);
     }
-    auto it = symbolTable.find(node.value);
-    if (it == symbolTable.end()) throw std::string("Unknown variable: ") + node.value;
+    auto it = llvmSymbolTable.find(node.value);
+    if (it == llvmSymbolTable.end()) throw std::string("Unknown variable: ") + node.value;
     llvm::Value* alloca = it->second.first;
     std::string typeStr = it->second.second;
-    llvm::Type* varType = (typeStr == "float64") ? builder.getDoubleTy() : builder.getInt32Ty();
+    llvm::Type* varType = getLLVMType(typeStr, builder);
     return builder.CreateLoad(varType, alloca, node.value);
 }
 
 llvm::Value* Engine::codegenAssign(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder) {
     using namespace edn;
-    // Assignment: (= var [:type] value)
-    if (node.values.size() < 3) throw "Expected variable and value";
+
+
+    // Assignment
+    // Literal: (= target :type value)
+    // Struct: (= target (StructName (Field1 Field2 ...)))
+    // Struct Field Assignment: (= (. target :field) value)
+    if (node.values.size() < 3) throw "Expected target and value";
+
+    if(node.values.size() == 3) {
+        auto it = node.values.begin();
+        ++it; // Skip '='
+        // Struct Construct
+        if((*it).type == EdnSymbol) {
+            return this->codegenAssignStruct(node, context, builder);
+        }
+        // Struct field assignment
+        else if ((*it).type == EdnList) 
+        {
+            return this->codegenAssignStructField(node, context, builder);
+        }
+        
+    }
+    if(node.values.size() == 4) {
+       return this->codegenAssignLiteral(node, context, builder);
+    }
+    
+    throw "Assignment target must be a symbol or field access";
+}
+
+llvm::Value* Engine::codegenAssignStruct(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder) {
+    //Struct: (= target (StructName (Field1 Field2 ...)))
     auto it = node.values.begin();
-    ++it; // varNode
-    const EdnNode& varNode = *it;
-    std::string typeStr = "int32";
-    const EdnNode* valNode = nullptr;
-    if (node.values.size() == 4 && (++it)->type == EdnKeyword) {
-        typeStr = it->value.substr(1); // remove leading ':'
-        ++it;
-        valNode = &(*it);
-    } else {
-        ++it;
-        valNode = &(*it);
-        if (valNode->type == EdnFloat) typeStr = "float64";
+    ++it; // Skip '='
+
+    const edn::EdnNode& targetNode = *it;
+    if (targetNode.type != edn::EdnSymbol) throw "Expected Struct assignment target to be a symbol";
+    ++it;
+
+    auto structDeclarationNode = *it;
+    if(structDeclarationNode.type != edn::EdnList || structDeclarationNode.values.size() < 2) {
+        throw "Expected Struct assignment to be of form (StructName (Field1 Field2 ...))";
     }
-    llvm::Value* value = this->codegenExpr(*valNode, context, builder);
-    auto symIt = symbolTable.find(varNode.value);
-    llvm::Value* alloca = nullptr;
-    llvm::Type* varType = (typeStr == "float64") ? builder.getDoubleTy() : builder.getInt32Ty();
-    if (symIt == symbolTable.end()) {
-        alloca = builder.CreateAlloca(varType, nullptr, varNode.value);
-        symbolTable[varNode.value] = std::make_pair(alloca, typeStr);
-    } else {
-        alloca = symIt->second.first;
+
+    auto structIt = structDeclarationNode.values.begin();
+    auto structNameNode = *structIt;
+    if (structNameNode.type != edn::EdnSymbol) throw "Expected Struct name to be a symbol";
+    if(llvmStructTypes.find(structNameNode.value) == llvmStructTypes.end()) {
+        throw std::string("Struct type not defined: ") + structNameNode.value;
     }
-    builder.CreateStore(value, alloca);
+    ++structIt; 
+    auto fieldsNode = *structIt;
+    if (fieldsNode.type != edn::EdnList) throw "Expected Struct fields";
+
+    std::vector<llvm::Value*> fieldValues;
+    for (const auto& fieldNode : fieldsNode.values) {  
+        llvm::Value* fieldValue = this->codegenExpr(fieldNode, context, builder);
+        fieldValues.push_back(fieldValue);
+    }
+
+    // Create struct instance with variable name and store pointer in symbol table
+    llvm::Type* structType = llvmStructTypes.at(structNameNode.value);
+    llvm::Value* structPtr = builder.CreateAlloca(structType, nullptr, targetNode.value);
+    for (size_t i = 0; i < fieldValues.size(); ++i) {
+        auto gep = builder.CreateStructGEP(structType, structPtr, i);
+        builder.CreateStore(fieldValues[i], gep);
+    }
+    llvmSymbolTable[targetNode.value] = {structPtr, structNameNode.value};
+    return structPtr;
+}
+
+llvm::Value* Engine::codegenAssignStructField(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder) {
+
+    // 1) Struct Field Assignment: (= (. target :field) value)
+    auto it = node.values.begin();
+    ++it; // Skip '='
+
+    // 2_ Extract target field access node
+    const edn::EdnNode& targetFieldNode = *it;
+    if (targetFieldNode.type != edn::EdnList || targetFieldNode.values.size() != 3) {
+        throw "Expected Struct field assignment to be of form (= (. target :field) value)";
+    }
+    auto fieldAcessIt = targetFieldNode.values.begin();
+    auto dot = *fieldAcessIt;
+    if (dot.type != edn::EdnSymbol || dot.value != ".") {
+        throw "Expected Struct field access to start with '.'";
+    }
+    ++fieldAcessIt; // Skip '.'
+    const edn::EdnNode& structTargetNode = *fieldAcessIt;
+    if (structTargetNode.type != edn::EdnSymbol) {
+        throw "Expected Struct field access target to be a symbol";
+    }
+    ++fieldAcessIt; 
+    const edn::EdnNode& fieldNode = *fieldAcessIt;
+    if (fieldNode.type != edn::EdnKeyword) {
+        throw "Expected Struct field to be a keyword";
+    }
+
+    auto symbolIt = llvmSymbolTable.find(structTargetNode.value);
+    if (symbolIt == llvmSymbolTable.end()) {
+        throw std::string("Struct target not defined: ") + structTargetNode.value;
+    }
+
+    std::string structName = symbolIt->second.second;
+    std::string fieldName = fieldNode.value.substr(1); // Remove leading ':'
+
+    auto yeetStructValueIt = yeetStructTable.find(structName);
+    if (yeetStructValueIt == yeetStructTable.end()) {
+        throw std::string("Struct not defined: ") + structName;
+    }
+    auto& yeetStructType = yeetStructValueIt->second;
+    
+
+    // Test if variable is a pointer to a struct
+    auto structTypePointer = symbolIt->second.first;
+    
+
+    // lookup llvm struct type definition
+    auto llvmStructTypeDefIt = llvmStructTypes.find(structName);
+    if (llvmStructTypeDefIt == llvmStructTypes.end()) {
+        throw std::string("Struct type not defined: ") + structName;
+    }
+    auto llvmStructTypeDef = llvmStructTypeDefIt->second;
+
+    // Lookup field index in struct type
+    auto fieldIndexIt = std::find_if(yeetStructType.begin(), yeetStructType.end(),
+        [&fieldName](const auto& field) { return field.first == fieldName; });
+    
+
+    if (fieldIndexIt == yeetStructType.end()) {
+        throw std::string("Field not a member of struct") + fieldName + " in struct " + structName;;
+    }
+    auto fieldIndexId = std::distance(yeetStructType.begin(), fieldIndexIt);
+    auto fieldType = fieldIndexIt->second;
+    
+
+    // 3_ extract value node
+    ++it; // Move to value node
+    const edn::EdnNode& valueNode = *it;
+    llvm::Value* value = this->codegenExpr(valueNode, context, builder);
+    if (value->getType() != getLLVMType(fieldType, builder)) {
+        throw std::string("Value type mismatch for field: ") + fieldName;
+    }
+
+    auto gep = builder.CreateStructGEP(llvmStructTypeDef, structTypePointer,  fieldIndexId);
+    return builder.CreateStore(value, gep);
+}
+
+llvm::Value* Engine::codegenAssignLiteral(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder) {
+
+    // 1) Exract variable node
+    auto it = node.values.begin();
+    ++it; // targetNode
+    const edn::EdnNode& variableNode = *it;
+    if (variableNode.type != edn::EdnSymbol) throw "Expected variable symbol";
+    ++it;
+
+    // 2) Extract type Node
+    const edn::EdnNode& typeNode = *it;
+    if (typeNode.type != edn::EdnKeyword) throw "Expected type keyword";
+    std::string typeStr = typeNode.value.substr(1); // remove leading ':'
+    ++it; // valueNode
+
+    edn::EdnNode valueNode = *it;
+
+    llvm::Value* value = nullptr;
+    llvm::Value* _alloca = nullptr;
+
+    // Handle codegen for valueNode
+    if (valueNode.type == edn::EdnInt || valueNode.type == edn::EdnFloat) {
+        valueNode.metadata["type"] = typeStr;
+        value = this->codegenExpr(valueNode, context, builder);
+    }
+    else if(valueNode.type == edn::EdnSymbol) {
+        // If it's a symbol, just load the value
+        value = this->codegenSymbol(valueNode, builder);
+    }
+    else if(valueNode.type == edn::EdnList) {
+        // If it's a list, treat it as a struct or function call
+        value = this->codegenList(valueNode, context, builder);
+    }
+    else {
+        throw "Expected value to be an int, float, or symbol, or list.";
+    }
+
+    // 4 Create alloca for the variable
+    llvm::Type* llvmType = getLLVMType(typeStr, builder);
+    auto symIt = llvmSymbolTable.find(variableNode.value);
+    if (symIt == llvmSymbolTable.end()) {
+        _alloca = builder.CreateAlloca(llvmType, nullptr, variableNode.value);
+        llvmSymbolTable[variableNode.value] = std::make_pair(_alloca, typeStr);
+    } else {
+        _alloca = symIt->second.first;
+    }
+    builder.CreateStore(value, _alloca);
+
     return value;
 }
 
@@ -177,6 +371,9 @@ llvm::Value* Engine::codegenList(const edn::EdnNode& node, llvm::LLVMContext& co
     const EdnNode& opNode = node.values.front();
     if (opNode.type != EdnSymbol) throw "Expected operator symbol";
     std::string op = opNode.value;
+    if (op == ".") {
+        return this->codegenStructAccess(node, context, builder);
+    }
     if (op == "defn") {
         return this->codegenDefn(node, context, builder);
     }
@@ -189,11 +386,32 @@ llvm::Value* Engine::codegenList(const edn::EdnNode& node, llvm::LLVMContext& co
     if (op == "while") {
         return this->codegenWhile(node, context, builder);
     }
+    if (op == "struct") {
+        // (struct name ((field1 :type1) (field2 :type2) ...))
+        if (node.values.size() != 3) throw "struct requires a name and a field list";
+        auto it = node.values.begin();
+        ++it; // nameNode
+        const edn::EdnNode& nameNode = *it;
+        ++it; // fieldsNode
+        const edn::EdnNode& fieldsNode = *it;
+        if (nameNode.type != edn::EdnSymbol) throw "struct: name must be a symbol";
+        if (fieldsNode.type != edn::EdnList) throw "struct: fields must be a list";
+        std::vector<std::pair<std::string, std::string>> fields;
+        for (const auto& field : fieldsNode.values) {
+            if (field.type == edn::EdnList && field.values.size() == 2 && field.values.front().type == edn::EdnSymbol && field.values.back().type == edn::EdnKeyword) {
+                fields.push_back({field.values.front().value, field.values.back().value.substr(1)});
+            } else {
+                throw "struct: each field must be (name :type)";
+            }
+        }
+        this->defineStructType(nameNode.value, fields, context);
+        return nullptr; // struct definition does not produce a value
+    }
     if(op == "+" || op == "-" || op == "*" || op == "/" || op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") {
         return this->codegenBinop(node, context, builder);
     }
     // Function call: (name arg1 arg2 ...)
-    if (opNode.type == edn::EdnSymbol && functionTable.count(op) > 0) {
+    if (opNode.type == edn::EdnSymbol && yeetFunctionTable.count(op) > 0) {
         return this->codegenCall(node, context, builder);
     }
     throw std::string("Unknown operator: ") + op;
@@ -222,9 +440,8 @@ llvm::Value* Engine::codegenDefn(const edn::EdnNode& node, llvm::LLVMContext&, l
     }
     EdnNode bodyNode = node;
     bodyNode.values.erase(bodyNode.values.begin(), std::next(bodyNode.values.begin(), 4));
-    functionTable[nameNode.value] = {args, bodyNode};
-    // Store return type in a new map or extend functionTable if needed
-    functionReturnTypes[nameNode.value] = retType;
+    yeetFunctionTable[nameNode.value] = {args, bodyNode};
+    yeetFunctionReturnTypes[nameNode.value] = retType;
     return nullptr; // defn does not produce a value
 }
 
@@ -232,23 +449,19 @@ llvm::Value* Engine::codegenDefn(const edn::EdnNode& node, llvm::LLVMContext&, l
 llvm::Value* Engine::codegenCall(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder) {
     using namespace edn;
     const EdnNode& opNode = node.values.front();
-    auto it = functionTable.find(opNode.value);
-    if (it == functionTable.end()) throw std::string("Unknown function: ") + opNode.value;
+    auto it = yeetFunctionTable.find(opNode.value);
+    if (it == yeetFunctionTable.end()) throw std::string("Unknown function: ") + opNode.value;
     const auto& [args, bodyNode] = it->second;
     if (node.values.size() - 1 != args.size()) throw "Function argument count mismatch";
     // Get return type
     std::string retType = "double";
-    auto retIt = functionReturnTypes.find(opNode.value);
-    if (retIt != functionReturnTypes.end()) retType = retIt->second;
-    llvm::Type* llvmRetType = builder.getDoubleTy();
-    if (retType == "int32") llvmRetType = builder.getInt32Ty();
-    else if (retType == "float64") llvmRetType = builder.getDoubleTy();
-    else if (retType == "void") llvmRetType = builder.getVoidTy();
+    auto retIt = yeetFunctionReturnTypes.find(opNode.value);
+    if (retIt != yeetFunctionReturnTypes.end()) retType = retIt->second;
+    llvm::Type* llvmRetType = getLLVMType(retType, builder);
     // Create function type
     std::vector<llvm::Type*> argTypes;
     for (const auto& arg : args) {
-        if (arg.second == "float64") argTypes.push_back(builder.getDoubleTy());
-        else argTypes.push_back(builder.getInt32Ty());
+        argTypes.push_back(getLLVMType(arg.second, builder));
     }
     auto funcType = llvm::FunctionType::get(llvmRetType, argTypes, false);
     auto& module = *builder.GetInsertBlock()->getModule();
@@ -262,15 +475,22 @@ llvm::Value* Engine::codegenCall(const edn::EdnNode& node, llvm::LLVMContext& co
             llvm::Type* argType = argTypes[i];
             llvm::Value* alloca = funcBuilder.CreateAlloca(argType, nullptr, args[i].first);
             funcBuilder.CreateStore(&*argIt, alloca);
-            symbolTable[args[i].first] = std::make_pair(alloca, args[i].second);
+            llvmSymbolTable[args[i].first] = std::make_pair(alloca, args[i].second);
         }
         llvm::Value* result = nullptr;
         for (const auto& expr : bodyNode.values) {
             result = this->codegenExpr(expr, context, funcBuilder);
         }
         if (retType != "void") {
-            if (result && result->getType()->isIntegerTy() && llvmRetType->isDoubleTy()) {
-                result = funcBuilder.CreateSIToFP(result, builder.getDoubleTy(), "intToDouble");
+            // If result type doesn't match return type, cast
+            if (result && result->getType() != llvmRetType) {
+                if (llvmRetType->isFloatingPointTy() && result->getType()->isIntegerTy()) {
+                    result = funcBuilder.CreateSIToFP(result, llvmRetType, "intToFloatRet");
+                } else if (llvmRetType->isIntegerTy() && result->getType()->isFloatingPointTy()) {
+                    result = funcBuilder.CreateFPToSI(result, llvmRetType, "floatToIntRet");
+                } else if (llvmRetType->isIntegerTy() && result->getType()->isIntegerTy() && llvmRetType != result->getType()) {
+                    result = funcBuilder.CreateIntCast(result, llvmRetType, true, "intCastRet");
+                }
             }
             funcBuilder.CreateRet(result);
         } else {
@@ -281,10 +501,16 @@ llvm::Value* Engine::codegenCall(const edn::EdnNode& node, llvm::LLVMContext& co
     auto argNodeIt = std::next(node.values.begin());
     for (size_t i = 0; i < args.size(); ++i, ++argNodeIt) {
         llvm::Value* argVal = this->codegenExpr(*argNodeIt, context, builder);
-        if (args[i].second == "float64" && argVal->getType()->isIntegerTy()) {
-            argVal = builder.CreateSIToFP(argVal, builder.getDoubleTy(), "intToDoubleArg");
-        } else if (args[i].second == "int32" && argVal->getType()->isDoubleTy()) {
-            argVal = builder.CreateFPToSI(argVal, builder.getInt32Ty(), "doubleToIntArg");
+        llvm::Type* expectedType = argTypes[i];
+        llvm::Type* actualType = argVal->getType();
+        if (expectedType != actualType) {
+            if (expectedType->isFloatingPointTy() && actualType->isIntegerTy()) {
+                argVal = builder.CreateSIToFP(argVal, expectedType, "intToFloatArg");
+            } else if (expectedType->isIntegerTy() && actualType->isFloatingPointTy()) {
+                argVal = builder.CreateFPToSI(argVal, expectedType, "floatToIntArg");
+            } else if (expectedType->isIntegerTy() && actualType->isIntegerTy() && expectedType != actualType) {
+                argVal = builder.CreateIntCast(argVal, expectedType, true, "intCastArg");
+            }
         }
         callArgs.push_back(argVal);
     }
@@ -414,23 +640,47 @@ llvm::Value* Engine::codegenBinop(const edn::EdnNode& node, llvm::LLVMContext& c
     std::string lhsType = "int32";
     std::string rhsType = "int32";
     if (lhsIt->type == EdnSymbol) {
-        auto it = symbolTable.find(lhsIt->value);
-        if (it != symbolTable.end()) lhsType = it->second.second;
+        auto it = llvmSymbolTable.find(lhsIt->value);
+        if (it != llvmSymbolTable.end()) lhsType = it->second.second;
     } else if (lhsIt->type == EdnFloat) {
         lhsType = "float64";
     }
     if (rhsIt->type == EdnSymbol) {
-        auto it = symbolTable.find(rhsIt->value);
-        if (it != symbolTable.end()) rhsType = it->second.second;
+        auto it = llvmSymbolTable.find(rhsIt->value);
+        if (it != llvmSymbolTable.end()) rhsType = it->second.second;
     } else if (rhsIt->type == EdnFloat) {
         rhsType = "float64";
     }
-    bool lhsIsDouble = (lhsType == "float64");
-    bool rhsIsDouble = (rhsType == "float64");
+
+    llvm::Type* lhsLLVMType = getLLVMType(lhsType, builder);
+    llvm::Type* rhsLLVMType = getLLVMType(rhsType, builder);
+
+    // Promote types for binops: if either is float, promote both to float64; else promote to largest int
+    bool lhsIsFloat = lhsLLVMType->isFloatingPointTy();
+    bool rhsIsFloat = rhsLLVMType->isFloatingPointTy();
+    bool isFloatOp = lhsIsFloat || rhsIsFloat;
+
+    // For integer binops, promote to largest bitwidth
+    unsigned intBitwidth = std::max(lhsLLVMType->getIntegerBitWidth(), rhsLLVMType->getIntegerBitWidth());
+    llvm::Type* promotedIntType = nullptr;
+    if (!isFloatOp) {
+        if (intBitwidth == 8) promotedIntType = builder.getInt8Ty();
+        else if (intBitwidth == 16) promotedIntType = builder.getInt16Ty();
+        else if (intBitwidth == 32) promotedIntType = builder.getInt32Ty();
+        else if (intBitwidth == 64) promotedIntType = builder.getInt64Ty();
+        else throw std::string("Unsupported integer bitwidth: ") + std::to_string(intBitwidth);
+        if (lhsLLVMType != promotedIntType) lhs = builder.CreateIntCast(lhs, promotedIntType, true, "intCastL");
+        if (rhsLLVMType != promotedIntType) rhs = builder.CreateIntCast(rhs, promotedIntType, true, "intCastR");
+    } else {
+        // Promote both to float64 for now
+        if (!lhsIsFloat) lhs = builder.CreateSIToFP(lhs, builder.getDoubleTy(), "intToDoubleL");
+        if (!rhsIsFloat) rhs = builder.CreateSIToFP(rhs, builder.getDoubleTy(), "intToDoubleR");
+        lhsLLVMType = builder.getDoubleTy();
+        rhsLLVMType = builder.getDoubleTy();
+    }
+
     if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") {
-        if (lhsIsDouble || rhsIsDouble) {
-            if (!lhsIsDouble) lhs = builder.CreateSIToFP(lhs, builder.getDoubleTy(), "intToDoubleL");
-            if (!rhsIsDouble) rhs = builder.CreateSIToFP(rhs, builder.getDoubleTy(), "intToDoubleR");
+        if (isFloatOp) {
             if (op == "==") return builder.CreateUIToFP(builder.CreateFCmpUEQ(lhs, rhs, "cmptmp"), builder.getDoubleTy());
             if (op == "!=") return builder.CreateUIToFP(builder.CreateFCmpUNE(lhs, rhs, "cmptmp"), builder.getDoubleTy());
             if (op == "<")  return builder.CreateUIToFP(builder.CreateFCmpULT(lhs, rhs, "cmptmp"), builder.getDoubleTy());
@@ -446,9 +696,7 @@ llvm::Value* Engine::codegenBinop(const edn::EdnNode& node, llvm::LLVMContext& c
             if (op == ">=") return builder.CreateICmpSGE(lhs, rhs, "cmptmp");
         }
     }
-    if (lhsIsDouble || rhsIsDouble) {
-        if (!lhsIsDouble) lhs = builder.CreateSIToFP(lhs, builder.getDoubleTy(), "intToDoubleL");
-        if (!rhsIsDouble) rhs = builder.CreateSIToFP(rhs, builder.getDoubleTy(), "intToDoubleR");
+    if (isFloatOp) {
         if (op == "+") return builder.CreateFAdd(lhs, rhs, "faddtmp");
         if (op == "-") return builder.CreateFSub(lhs, rhs, "fsubtmp");
         if (op == "*") return builder.CreateFMul(lhs, rhs, "fmultmp");
@@ -461,3 +709,78 @@ llvm::Value* Engine::codegenBinop(const edn::EdnNode& node, llvm::LLVMContext& c
     }
     throw std::string("Unknown operator: ") + op;
 }
+
+
+
+// Helper: Define a struct type
+void Engine::defineStructType(const std::string& name, const std::vector<std::pair<std::string, std::string>>& fields, llvm::LLVMContext& context) {
+    // 1 Check if struct type already exists
+    if (llvmStructTypes.find(name) != llvmStructTypes.end()) {  
+        throw std::string("Struct type already defined: ") + name;
+    }
+    yeetStructTable[name] = fields;
+
+    // 2 Build LLVM representation
+    std::vector<llvm::Type*> llvmFields;
+    for (const auto& [fieldName, fieldType] : fields) {
+        llvmFields.push_back(getLLVMType(fieldType, *(new llvm::IRBuilder<>(context))));
+    }
+    auto structType = llvm::StructType::create(context, llvmFields, name);
+    llvmStructTypes[name] = structType;
+}
+
+llvm::Value* Engine::codegenStructAccess(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder)
+{
+    // Expect: (. target :field)
+    if (node.values.size() != 3)
+        throw "Struct field access must be of form (. target :field)";
+
+    auto it = node.values.begin();
+    auto dotNode = *it;
+    if (dotNode.type != edn::EdnSymbol || dotNode.value != ".")
+        throw "Struct field access must start with '.'";
+    ++it;
+    const edn::EdnNode& structTargetNode = *it;
+    if (structTargetNode.type != edn::EdnSymbol)
+        throw "Struct field access target must be a symbol";
+    ++it;
+    const edn::EdnNode& fieldNode = *it;
+    if (fieldNode.type != edn::EdnKeyword)
+        throw "Struct field must be a keyword";
+
+    auto symbolIt = llvmSymbolTable.find(structTargetNode.value);
+    if (symbolIt == llvmSymbolTable.end())
+        throw std::string("Struct target not defined: ") + structTargetNode.value;
+
+    std::string structName = symbolIt->second.second;
+    std::string fieldName = fieldNode.value.substr(1); // Remove leading ':'
+
+    auto yeetStructValueIt = yeetStructTable.find(structName);
+    if (yeetStructValueIt == yeetStructTable.end())
+        throw std::string("Struct not defined: ") + structName;
+    auto& yeetStructType = yeetStructValueIt->second;
+
+    // Type check: must be pointer to struct
+    auto structTypePointer = symbolIt->second.first;
+    
+    
+    // lookup llvm struct type definition
+    auto llvmStructTypeDefIt = llvmStructTypes.find(structName);
+    if (llvmStructTypeDefIt == llvmStructTypes.end())
+        throw std::string("Struct type not defined: ") + structName;
+    auto llvmStructTypeDef = llvmStructTypeDefIt->second;
+
+    // Lookup field index in struct type
+    auto fieldIndexIt = std::find_if(yeetStructType.begin(), yeetStructType.end(),
+        [&fieldName](const auto& field) { return field.first == fieldName; });
+    if (fieldIndexIt == yeetStructType.end())
+        throw std::string("Field not a member of struct: ") + fieldName + " in struct " + structName;
+    auto fieldIndexId = std::distance(yeetStructType.begin(), fieldIndexIt);
+    auto fieldType = fieldIndexIt->second;
+
+    // Access field value
+    auto gep = builder.CreateStructGEP(llvmStructTypeDef, structTypePointer, fieldIndexId);
+    return builder.CreateLoad(getLLVMType(fieldType, builder), gep, fieldName);
+}
+
+

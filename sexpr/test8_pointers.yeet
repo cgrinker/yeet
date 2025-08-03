@@ -1,0 +1,15 @@
+(
+    (defn :int32 inc_ptr ((p :int32*)) (
+        (put p :int32 (+ (deref p) 1))
+        (deref p)
+    )
+
+    )
+
+
+    (= x :int32 41)
+    (inc_ptr (ref x))
+
+
+    (+ x 0)
+)

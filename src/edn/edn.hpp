@@ -18,6 +18,7 @@ namespace edn {
   struct EdnToken {
     TokenType type;
     int line;
+    int column;
     std::string value;
   };
 
@@ -43,10 +44,14 @@ namespace edn {
   struct EdnNode {
     NodeType type;
     int line;
+    int column;
     std::string value;
     std::list<EdnNode> values;
     std::map<std::string, std::string> metadata;
+
+    std::string pprint();
   };
 
   EdnNode read(std::string edn);
+  std::string pprint(EdnNode &node, int indent = 1, bool multiline = true);
 }

@@ -19,6 +19,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(LLVM CONFIG REQUIRED)
 find_package(cxxopts CONFIG REQUIRED)
 find_package(pegtl CONFIG REQUIRED)
+find_package(fmt CONFIG REQUIRED)
 
 
 ## LLVM
@@ -51,13 +52,20 @@ file(GLOB_RECURSE SRC_FILES
 )
 
 
+
 ## Main Executable
 add_executable(main ${SRC_FILES})
 
 ## Include directories
 target_include_directories(main PRIVATE "src")
 
+# Enable C++ exception handling and unwind semantics on MSVC
+if(MSVC)
+    target_compile_options(main PRIVATE /EHsc)
+endif()
+
 ## Link
 target_link_libraries(main PRIVATE ${llvm_libs})
 target_link_libraries(main PRIVATE cxxopts::cxxopts)
 target_link_libraries(main PRIVATE taocpp::pegtl)
+target_link_libraries(main PRIVATE fmt::fmt)

@@ -15,7 +15,7 @@ int main(int argc, char *argv[])
     options.add_options()("h,help", "Print usage")("f, filename", "The filename to execute", cxxopts::value<std::vector<std::string>>());
     ;
 
-    auto engine = std::make_unique<yeet::Engine>();
+    std::string engineFilePath;
 
     try
     {
@@ -35,6 +35,7 @@ int main(int argc, char *argv[])
                 return 1;
             }
             std::string filename = filenames[0];
+            engineFilePath = filename;
             std::ifstream file(filename);
             if (!file)
             {
@@ -42,9 +43,15 @@ int main(int argc, char *argv[])
                 return 1;
             }
             std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            auto engine = std::make_unique<yeet::Engine>(engineFilePath);
             try
             {
                 engine->run(contents);
+            }
+            catch (const yeet::YeetCompileException &e)
+            {
+                std::cerr << e.what() << std::endl;
+                return 1;
             }
             catch (const std::exception &e)
             {

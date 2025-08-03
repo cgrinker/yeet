@@ -11,7 +11,7 @@
             "program": "${workspaceRoot}/build/Debug/main.exe",
             "args": [
                 "--filename",
-                "sexpr/test7_structs.yeet"
+                "${input:yeetFileToRun}"
             ],
             "cwd": "${workspaceRoot}",
             "stopAtEntry": false,
@@ -24,7 +24,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceRoot}/build/main",
-            "args": ["--filename", "sexpr/test1.yeet"],
+            "args": ["--filename", "${input:yeetFileToRun}"],
             "stopAtEntry": false,
             "cwd": "${workspaceRoot}",
             "environment": [],
@@ -32,5 +32,25 @@
             "MIMode": "lldb"
         },
         
+    ],
+    "inputs": [
+        {
+            "id": "yeetFileToRun",
+            "type": "pickString",
+            "description": "Select the .yeet file to run",
+            "options": [
+                "sexpr/test0_int_arithmatic.yeet",
+                "sexpr/test1_int_assignment.yeet",
+                "sexpr/test2_float_arithmatic.yeet",
+                "sexpr/test3.yeet",
+                "sexpr/test3_cond.yeet",
+                "sexpr/test4_while.yeet",
+                "sexpr/test5_functions.yeet",
+                "sexpr/test6_bitwidths.yeet",
+                "sexpr/test7_structs.yeet",
+                "sexpr/test8_pointers.yeet"
+            ],
+            "default": "sexpr/test1_int_assignment.yeet"
+        }
     ]
 }

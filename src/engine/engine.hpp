@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#include <format>
+#include <string>
 
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/IRBuilder.h>
@@ -11,15 +13,47 @@
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/Support/TargetSelect.h>
 
+#include <fmt/format.h>
+
 #include "edn/edn.hpp"
 
 namespace yeet
 {
+    
+
+    class YeetCompileException : public std::exception {
+    public:
+        YeetCompileException(const edn::EdnNode& node, const std::string& msg, const std::string& filePath = "", const char* engineFile = nullptr, int engineLine = -1)
+            : line(node.line), column(node.column), message(msg), filePath(filePath), nodeStr(edn::pprint(const_cast<edn::EdnNode&>(node), 0, false)), engineFile(engineFile ? engineFile : ""), engineLine(engineLine) {}
+
+        const char* what() const noexcept override {
+            static std::string formatted;
+            #ifdef NDEBUG
+            // Release: Only .yeet file info
+            formatted = fmt::format("{}({},{}) : error: {}\nNode: {}", filePath, line, column, message, nodeStr);
+            #else
+            // Debug: Show both .yeet and engine file/line
+            formatted = fmt::format("{}({},{}) : error: {}\nNode: {}\n[In Native Code: {}:{}]", filePath, line, column, message, nodeStr, engineFile, engineLine);
+            #endif
+            return formatted.c_str();
+        }
+    private:
+        int line = -1;
+        int column = 1;
+        std::string message;
+        std::string filePath;
+        std::string nodeStr;
+        std::string engineFile;
+        int engineLine = -1;
+    };
+
     class Engine
     {
     private:
         std::unique_ptr<llvm::orc::LLJIT> jit;
         std::unique_ptr<llvm::LLVMContext> context;
+        std::unique_ptr<llvm::Module> mod;
+        std::string filePath;
 
     private:
         // LLVM Variable/Struct definitions
@@ -36,10 +70,12 @@ namespace yeet
         std::unordered_map<std::string, std::string> yeetFunctionReturnTypes;
         
     public:
-        Engine();
+        Engine(const std::string& filePath);
         ~Engine();
 
         void run(std::string& s);
+
+        const std::string& getFilePath() const { return filePath; }
 
     private:
         void initializeLLVM();
@@ -50,20 +86,24 @@ namespace yeet
         llvm::Value* codegenExpr(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenCond(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenAssign(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenAssignPointer(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenAssignLiteral(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenAssignStruct(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenAssignStructField(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenStructAccess(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenReference(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
+        llvm::Value* codegenDereference(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenBinop(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenWhile(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenDefn(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         llvm::Value* codegenCall(const edn::EdnNode& node, llvm::LLVMContext& context, llvm::IRBuilder<>& builder);
         
-        
-        void defineStructType(const std::string& name, const std::vector<std::pair<std::string, std::string>>& fields, llvm::LLVMContext& context);
+        void defineStructType(const edn::EdnNode& node, const std::vector<std::pair<std::string, std::string>>& fields, llvm::IRBuilder<>& builder, llvm::LLVMContext& context);
         // Set a struct field value (mutate in place)
-        
-        
-        // Add any other necessary member variables or methods here
+
+    private:
+        llvm::Type* getLLVMType(const edn::EdnNode& node, const std::string& typeStr, llvm::IRBuilder<>& builder);
+
+        std::string dumpModule();
     };
 }

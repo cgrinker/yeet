@@ -86,6 +86,8 @@ void Engine::run(std::string& s)
         }
     }
 
+    
+
     // Print the generated LLVM IR
     std::cout << "\n===== Generated LLVM IR =====\n";
     std::cout << dumpModule();
@@ -456,7 +458,7 @@ llvm::Value* Engine::codegenAssignPointer(const edn::EdnNode& node, llvm::LLVMCo
     } else {
         throw YeetCompileException(valueNode, "put expects value to be int, float, symbol, or list", filePath, __FILE__, __LINE__);
     }
-    llvm::Type* llvmType = getLLVMType(node, typeStr, builder);
+    
     // Target must produce a pointer
     llvm::Value* ptr = nullptr;
     if (targetNode.type == EdnSymbol) {

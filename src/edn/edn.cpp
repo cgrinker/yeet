@@ -600,7 +600,7 @@ namespace edn {
       {
         if (i > 0)
           stream << ", ";
-          stream << *it;
+        stream << *it;
 
       }
       stream << "]";
